@@ -1,0 +1,324 @@
+name: KTHSP1 Image Queue Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kthsp1-queue-worker.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kthsp1-image-queue-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch next KTHSP1 job
+        id: queue
+        env:
+          QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          RESP="$(curl -fsS \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            "${QUEUE_ROOT}?action=next")"
+
+          printf '%s' "$RESP" > queue-response.json
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          data = json.loads(Path("queue-response.json").read_text())
+          job = data.get("job")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("has_job=" + ("true" if job else "false") + "\n")
+
+          if job:
+              Path("job.json").write_text(
+                  json.dumps(job, ensure_ascii=False, indent=2),
+                  encoding="utf-8"
+              )
+              print("KTHSP1 job:", job["id"])
+          else:
+              print("No queued KTHSP1 jobs.")
+          PY
+
+      - name: Restore model cache
+        if: steps.queue.outputs.has_job == 'true'
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .kthsp1-cache
+          key: kthsp1-sd15-runtime-base-v1
+
+      - name: Prepare downloader
+        if: steps.queue.outputs.has_job == 'true'
+        run: |
+          python -m pip install --disable-pip-version-check -q gdown
+
+      - name: Rehydrate runtime and model
+        if: steps.queue.outputs.has_job == 'true'
+        run: |
+          set -euo pipefail
+
+          mkdir -p .kthsp1-cache/runtime
+          mkdir -p .kthsp1-cache/models
+          mkdir -p result
+
+          if [ ! -f .kthsp1-cache/runtime.zip ]; then
+            gdown 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv \
+              -O .kthsp1-cache/runtime.zip
+          fi
+
+          if ! find .kthsp1-cache/runtime -type f -name sd-cli \
+              -print -quit | grep -q .; then
+            unzip -q -o .kthsp1-cache/runtime.zip \
+              -d .kthsp1-cache/runtime
+          fi
+
+          BASE=".kthsp1-cache/models/base.gguf"
+
+          if [ ! -f "$BASE" ]; then
+            gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d \
+              -O "$BASE"
+          fi
+
+          echo \
+          "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  $BASE" \
+          | sha256sum -c -
+
+      - name: Save model cache
+        if: >
+          steps.queue.outputs.has_job == 'true' &&
+          steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .kthsp1-cache
+          key: kthsp1-sd15-runtime-base-v1
+
+      - name: Generate KTHSP1 image
+        if: steps.queue.outputs.has_job == 'true'
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          job = json.loads(Path("job.json").read_text(encoding="utf-8"))
+
+          sd_cli = next(
+              Path(".kthsp1-cache/runtime").rglob("sd-cli")
+          )
+          sd_cli.chmod(0o755)
+
+          env = os.environ.copy()
+          env["LD_LIBRARY_PATH"] = (
+              str(sd_cli.parent)
+              + ":"
+              + env.get("LD_LIBRARY_PATH", "")
+          )
+
+          args = [
+              str(sd_cli),
+              "-m", ".kthsp1-cache/models/base.gguf",
+              "--backend", "cpu",
+              "--params-backend", "disk",
+              "--vae-conv-direct",
+              "-p", job["prompt"],
+              "-n", job.get("negative_prompt", ""),
+              "--cfg-scale", "1.0",
+              "--steps", str(job["steps"]),
+              "--seed", str(job["seed"]),
+              "-W", str(job["width"]),
+              "-H", str(job["height"]),
+              "-o", "result/image.png",
+          ]
+
+          proc = subprocess.run(
+              args,
+              env=env,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True
+          )
+
+          Path("result/generation.log").write_text(
+              proc.stdout,
+              encoding="utf-8"
+          )
+
+          print(proc.stdout)
+
+          if proc.returncode != 0:
+              raise SystemExit(proc.returncode)
+          PY
+
+      - name: Verify PNG
+        if: steps.queue.outputs.has_job == 'true'
+        run: |
+          python - <<'PY'
+          import json
+          import hashlib
+          import struct
+          from pathlib import Path
+
+          job = json.loads(Path("job.json").read_text(encoding="utf-8"))
+          p = Path("result/image.png")
+
+          assert p.exists()
+          assert p.stat().st_size > 0
+
+          b = p.read_bytes()
+          assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+          w, h = struct.unpack(">II", b[16:24])
+          assert w == int(job["width"])
+          assert h == int(job["height"])
+
+          manifest = {
+              "status": "TECH_QA_PASS",
+              "job_id": job["id"],
+              "request_key": job["request_key"],
+              "project": job["project"],
+              "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+              "image_gen_used": False,
+              "width": w,
+              "height": h,
+              "sha256": hashlib.sha256(b).hexdigest(),
+              "output": "image.png"
+          }
+
+          Path("result/manifest.json").write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+
+          print(json.dumps(
+              manifest,
+              ensure_ascii=False,
+              indent=2
+          ))
+          PY
+
+      - name: Upload evidence artifact
+        if: steps.queue.outputs.has_job == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kthsp1-${{ github.run_id }}
+          path: |
+            result/image.png
+            result/manifest.json
+            result/generation.log
+            job.json
+          retention-days: 7
+
+      - name: Publish result to repository
+        if: steps.queue.outputs.has_job == 'true'
+        run: |
+          set -euo pipefail
+
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
+          DEST="kthsp1-results/${JOB_ID}"
+
+          mkdir -p "$DEST"
+
+          cp result/image.png "$DEST/image.png"
+          cp result/manifest.json "$DEST/manifest.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "$DEST"
+
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "KTHSP1 result ${JOB_ID} [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Complete queue job
+        if: steps.queue.outputs.has_job == 'true'
+        env:
+          QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
+          SHA="$(sha256sum result/image.png | awk '{print $1}')"
+
+          RESULT_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/kthsp1-results/${JOB_ID}/image.png"
+
+          jq -n \
+            --arg id "$JOB_ID" \
+            --arg url "$RESULT_URL" \
+            --arg sha "$SHA" \
+            '{
+              action:"complete",
+              id:$id,
+              status:"completed",
+              result_url:$url,
+              result_sha256:$sha
+            }' \
+            > complete.json
+
+          curl -fsS \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            --data @complete.json \
+            "$QUEUE_ROOT"
+
+      - name: Mark failed queue job
+        if: >
+          failure() &&
+          steps.queue.outputs.has_job == 'true'
+        env:
+          QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
+        run: |
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
+          jq -n \
+            --arg id "$JOB_ID" \
+            '{
+              action:"complete",
+              id:$id,
+              status:"failed",
+              error:"github_actions_worker_failed"
+            }' \
+            > failed.json
+
+          curl -sS \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            --data @failed.json \
+            "$QUEUE_ROOT" || true
