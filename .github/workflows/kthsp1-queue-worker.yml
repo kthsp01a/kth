@@ -239,13 +239,13 @@ jobs:
           from pathlib import Path
           from PIL import Image, ImageChops
           job=json.loads(Path('job.json').read_text(encoding='utf-8'))
-          src=Image.open('inpaint_input.png').convert('RGBA')
-          gen=Image.open('out.png').convert('RGBA')
-          mask=Image.open('inpaint_mask.png').convert('L')
+          src=Image.open('result/init.png').convert('RGBA')
+          gen=Image.open('result/image.png').convert('RGBA')
+          mask=Image.open('result/mask.png').convert('L')
           if src.size!=gen.size or mask.size!=gen.size:
               raise SystemExit('SOURCE_PRESERVATION_SIZE_MISMATCH')
           out=Image.composite(gen,src,mask)
-          out.save('out.png')
+          out.save('result/image.png')
           outside=Image.eval(mask,lambda p:255-p)
           d=ImageChops.difference(src,out).convert('RGB')
           bbox=Image.composite(d,Image.new('RGB',d.size,(0,0,0)),outside).getbbox()
