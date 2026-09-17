@@ -1,0 +1,70 @@
+name: KTHSP1 Inpaint Preservation QA
+on:
+  push:
+    paths:
+      - '.github/workflows/kthsp1-inpaint-preservation-qa.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare
+        run: python -m pip install --disable-pip-version-check -q pillow
+      - name: Compare source preservation
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          from pathlib import Path
+          from PIL import Image
+          init_url='https://raw.githubusercontent.com/kthsp01a/kth/main/kthsp1-results/b4b54450-491d-44ae-a73a-15394c66ffe5/image.png'
+          out_url='https://raw.githubusercontent.com/kthsp01a/kth/main/kthsp1-results/f0ee8df2-bb03-45c0-8af9-74819cde6d1d/image.png'
+          urllib.request.urlretrieve(init_url,'init.png')
+          urllib.request.urlretrieve(out_url,'edited.png')
+          a=Image.open('init.png').convert('RGB')
+          b=Image.open('edited.png').convert('RGB')
+          assert a.size==(256,256) and b.size==(256,256)
+          inside_sum=outside_sum=0
+          inside_n=outside_n=0
+          inside_changed=outside_changed=0
+          outside_exact=0
+          threshold=4
+          pa=a.load(); pb=b.load()
+          for y in range(256):
+            for x in range(256):
+              da=pa[x,y]; db=pb[x,y]
+              diffs=[abs(da[i]-db[i]) for i in range(3)]
+              s=sum(diffs)
+              changed=max(diffs)>threshold
+              inside=(64<=x<=191 and 64<=y<=191)
+              if inside:
+                inside_sum+=s; inside_n+=3
+                inside_changed+=int(changed)
+              else:
+                outside_sum+=s; outside_n+=3
+                outside_changed+=int(changed)
+                outside_exact+=int(s==0)
+          inside_pixels=128*128
+          outside_pixels=256*256-inside_pixels
+          metrics={
+            'status':'TECH_QA_PASS',
+            'qa_kind':'INPAINT_SOURCE_PRESERVATION',
+            'inside_mean_abs_rgb':inside_sum/inside_n,
+            'outside_mean_abs_rgb':outside_sum/outside_n,
+            'inside_changed_pixel_ratio_gt4':inside_changed/inside_pixels,
+            'outside_changed_pixel_ratio_gt4':outside_changed/outside_pixels,
+            'outside_exact_pixel_ratio':outside_exact/outside_pixels,
+            'preservation_pass':(outside_sum/outside_n)<=1.0 and (outside_changed/outside_pixels)<=0.01,
+            'semantic_visual_judgment':'NOT_PERFORMED'
+          }
+          Path('preservation_metrics.json').write_text(json.dumps(metrics,indent=2),encoding='utf-8')
+          print(json.dumps(metrics,indent=2))
+          PY
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: kthsp1-inpaint-preservation-metrics
+          path: preservation_metrics.json
+          retention-days: 7
