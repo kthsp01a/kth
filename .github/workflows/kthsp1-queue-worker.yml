@@ -65,14 +65,14 @@ jobs:
         id: route
         run: |
           python - <<'PY'
-          import json, os
+          import json
           from pathlib import Path
           job=json.loads(Path("job.json").read_text(encoding="utf-8"))
           mode="inpaint" if job.get("output_kind")=="EXISTING_ASSET_EDIT" else "txt2img"
-          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
-              f.write("mode="+mode+"\\n")
+          Path("route_mode.txt").write_text(mode,encoding="utf-8")
           print("KTHSP1 route:",mode)
           PY
+          echo "mode=$(cat route_mode.txt)" >> "$GITHUB_OUTPUT"
       - name: Restore model cache
         if: steps.queue.outputs.has_job == 'true'
         id: cache-restore
