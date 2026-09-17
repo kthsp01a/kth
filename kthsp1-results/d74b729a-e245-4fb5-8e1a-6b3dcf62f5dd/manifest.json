@@ -1,0 +1,12 @@
+{
+  "status": "TECH_QA_PASS",
+  "job_id": "d74b729a-e245-4fb5-8e1a-6b3dcf62f5dd",
+  "request_key": "concrete_jungle_env_actual_20260917_001",
+  "project": "콘크리트애니만들기",
+  "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+  "image_gen_used": false,
+  "width": 256,
+  "height": 256,
+  "sha256": "aa9b2932c4939b12dc5b0a898b9f9c9db51ee7b8d6793bf59b6adcddbbb9b773",
+  "output": "image.png"
+}
