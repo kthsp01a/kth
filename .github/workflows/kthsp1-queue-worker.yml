@@ -29,12 +29,12 @@ jobs:
         id: queue
         env:
           QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
-          QUEUE_TOKEN: \${{ secrets.KTHSP1_QUEUE_TOKEN }}
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
           set -euo pipefail
           RESP="$(curl -fsS \\
-            -H "x-kthsp1-token: \${QUEUE_TOKEN}" \\
-            "\${QUEUE_ROOT}?action=next")"
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \\
+            "${QUEUE_ROOT}?action=next")"
           printf '%s' "$RESP" > queue-response.json
           python - <<'PY'
           import json, os
@@ -124,7 +124,7 @@ jobs:
           fi
           echo "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f  $TXT2IMG" | sha256sum -c -
 
-          if [ "\${{ steps.route.outputs.mode }}" = "inpaint" ]; then
+          if [ "${{ steps.route.outputs.mode }}" = "inpaint" ]; then
             INPAINT=".kthsp1-cache/models/inpaint.gguf"
             if [ ! -f "$INPAINT" ]; then
               gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d -O "$INPAINT"
@@ -260,7 +260,7 @@ jobs:
         if: steps.queue.outputs.has_job == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: kthsp1-\${{ github.run_id }}
+          name: kthsp1-${{ github.run_id }}
           path: |
             result/image.png
             result/manifest.json
@@ -274,7 +274,7 @@ jobs:
         run: |
           set -euo pipefail
           JOB_ID="$(python -c 'import json; print(json.load(open("job.json"))["id"])')"
-          DEST="kthsp1-results/\${JOB_ID}"
+          DEST="kthsp1-results/${JOB_ID}"
           mkdir -p "$DEST"
           cp result/image.png "$DEST/image.png"
           cp result/manifest.json "$DEST/manifest.json"
@@ -283,7 +283,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$DEST"
           if ! git diff --cached --quiet; then
-            git commit -m "KTHSP1 result \${JOB_ID} [skip ci]"
+            git commit -m "KTHSP1 result ${JOB_ID} [skip ci]"
             git push origin HEAD:main
           fi
 
@@ -291,25 +291,25 @@ jobs:
         if: steps.queue.outputs.has_job == 'true'
         env:
           QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
-          QUEUE_TOKEN: \${{ secrets.KTHSP1_QUEUE_TOKEN }}
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
           set -euo pipefail
           JOB_ID="$(python -c 'import json; print(json.load(open("job.json"))["id"])')"
           SHA="$(sha256sum result/image.png | awk '{print $1}')"
-          RESULT_URL="https://raw.githubusercontent.com/\${GITHUB_REPOSITORY}/main/kthsp1-results/\${JOB_ID}/image.png"
+          RESULT_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/kthsp1-results/${JOB_ID}/image.png"
           jq -n --arg id "$JOB_ID" --arg url "$RESULT_URL" --arg sha "$SHA" \\
             '{action:"complete",id:$id,status:"completed",result_url:$url,result_sha256:$sha}' > complete.json
-          curl -fsS -X POST -H "content-type: application/json" -H "x-kthsp1-token: \${QUEUE_TOKEN}" --data @complete.json "$QUEUE_ROOT"
+          curl -fsS -X POST -H "content-type: application/json" -H "x-kthsp1-token: ${QUEUE_TOKEN}" --data @complete.json "$QUEUE_ROOT"
 
       - name: Mark failed queue job
         if: failure() && steps.queue.outputs.has_job == 'true'
         env:
           QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
-          QUEUE_TOKEN: \${{ secrets.KTHSP1_QUEUE_TOKEN }}
+          QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
           JOB_ID="$(python -c 'import json; print(json.load(open("job.json"))["id"])')"
           ERR="github_actions_worker_failed"
           if [ -f failure_reason.txt ]; then ERR="$(cat failure_reason.txt)"; fi
           jq -n --arg id "$JOB_ID" --arg error "$ERR" \\
             '{action:"complete",id:$id,status:"failed",error:$error}' > failed.json
-          curl -sS -X POST -H "content-type: application/json" -H "x-kthsp1-token: \${QUEUE_TOKEN}" --data @failed.json "$QUEUE_ROOT" || true
+          curl -sS -X POST -H "content-type: application/json" -H "x-kthsp1-token: ${QUEUE_TOKEN}" --data @failed.json "$QUEUE_ROOT" || true
