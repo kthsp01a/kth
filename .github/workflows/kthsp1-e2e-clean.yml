@@ -1,0 +1,98 @@
+name: KTHSP1 Concrete Jungle Clean E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/kthsp1-e2e-clean.yml'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Prepare
+        run: |
+          python -m pip install --disable-pip-version-check -q gdown
+          mkdir -p runtime models result
+
+      - name: Download runtime
+        run: |
+          gdown 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv -O runtime.zip
+          unzip -q runtime.zip -d runtime
+
+      - name: Download and verify model
+        run: |
+          gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d -O models/base.gguf
+          echo "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  models/base.gguf" | sha256sum -c -
+
+      - name: Generate image
+        run: |
+          set -euo pipefail
+
+          SD_CLI="$(find runtime -type f -name sd-cli -print -quit)"
+          test -n "$SD_CLI"
+          chmod +x "$SD_CLI"
+
+          SD_DIR="$(dirname "$SD_CLI")"
+          export LD_LIBRARY_PATH="$SD_DIR:${LD_LIBRARY_PATH:-}"
+
+          "$SD_CLI" \
+            -m models/base.gguf \
+            --backend cpu \
+            --params-backend disk \
+            --vae-conv-direct \
+            -p "cinematic 2D animated film background, abandoned concrete urban alley after rain, cracked concrete walls, moss and small plants, soft dawn mist, atmospheric light, detailed hand painted animation background, empty environment" \
+            -n "people, person, character, animal, text, sign, logo, watermark, poster, blurry, low quality" \
+            --cfg-scale 1.0 \
+            --steps 1 \
+            --seed 20260917 \
+            -W 256 \
+            -H 256 \
+            -o result/CONCRETE_JUNGLE_ENV_E2E_256.png \
+            2>&1 | tee result/generation.log
+
+      - name: Verify PNG
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, struct, json
+
+          p = Path("result/CONCRETE_JUNGLE_ENV_E2E_256.png")
+          assert p.exists() and p.stat().st_size > 0
+
+          b = p.read_bytes()
+          assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+          w, h = struct.unpack(">II", b[16:24])
+          assert (w, h) == (256, 256)
+
+          manifest = {
+              "status": "TECH_QA_PASS",
+              "project": "콘크리트애니만들기",
+              "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+              "image_gen_used": False,
+              "width": w,
+              "height": h,
+              "sha256": hashlib.sha256(b).hexdigest(),
+              "output": p.name
+          }
+
+          Path("result/manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+          print(json.dumps(manifest, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: kthsp1-concrete-jungle-clean-e2e
+          path: |
+            result/CONCRETE_JUNGLE_ENV_E2E_256.png
+            result/manifest.json
+            result/generation.log
+          retention-days: 7
