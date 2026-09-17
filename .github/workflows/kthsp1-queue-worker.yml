@@ -65,7 +65,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: .kthsp1-cache
-          key: kthsp1-sd15-runtime-base-v1
+          key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
 
       - name: Prepare downloader
         if: steps.queue.outputs.has_job == 'true'
@@ -95,12 +95,12 @@ jobs:
           BASE=".kthsp1-cache/models/base.gguf"
 
           if [ ! -f "$BASE" ]; then
-            gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d \
-              -O "$BASE"
+            curl -L --fail --retry 3 --retry-delay 2 "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/f41080936c76af537542aedf67f0dab94e1f337f/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf?download=true" \
+              -o "$BASE"
           fi
 
           echo \
-          "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  $BASE" \
+          "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f  $BASE" \
           | sha256sum -c -
 
       - name: Save model cache
@@ -110,7 +110,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: .kthsp1-cache
-          key: kthsp1-sd15-runtime-base-v1
+          key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
 
       - name: Generate KTHSP1 image
         if: steps.queue.outputs.has_job == 'true'
@@ -143,7 +143,7 @@ jobs:
               "--vae-conv-direct",
               "-p", job["prompt"],
               "-n", job.get("negative_prompt", ""),
-              "--cfg-scale", "1.0",
+              "--cfg-scale", "7.0",
               "--steps", str(job["steps"]),
               "--seed", str(job["seed"]),
               "-W", str(job["width"]),
