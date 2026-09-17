@@ -59,6 +59,23 @@ jobs:
               print("No queued KTHSP1 jobs.")
           PY
 
+      - name: Route job minimal
+        if: steps.queue.outputs.has_job == 'true'
+        id: route
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          job=json.loads(Path("job.json").read_text(encoding="utf-8"))
+          mode="inpaint" if job.get("output_kind")=="EXISTING_ASSET_EDIT" else "txt2img"
+          with open(os.environ["GITHUB_OUTPUT"],"a") as f:
+              f.write("mode="+mode+"\n")
+          print("KTHSP1 route:",mode)
+          if mode=="inpaint":
+              Path("failure_reason.txt").write_text("INPAINT_ROUTE_HOLD",encoding="utf-8")
+              raise SystemExit(2)
+          PY
+
       - name: Restore model cache
         if: steps.queue.outputs.has_job == 'true'
         id: cache-restore
