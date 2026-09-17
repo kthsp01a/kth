@@ -1,0 +1,13 @@
+{
+  "status": "TECH_QA_PASS",
+  "route_mode": "txt2img",
+  "job_id": "6f2dbf8d-b8d5-49a6-8ba1-c85f5872a08b",
+  "request_key": "concrete_jungle_p0_mbt_01_recovery_256x512_20260918_001",
+  "project": "CONCRETE_JUNGLE",
+  "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+  "image_gen_used": false,
+  "width": 256,
+  "height": 512,
+  "sha256": "aef0cc9b2313887dae8ac517b334998ee2c8ba9baaab1881ca63d6ff4a9f8b9a",
+  "output": "image.png"
+}
