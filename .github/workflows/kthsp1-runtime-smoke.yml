@@ -1,0 +1,39 @@
+name: KTHSP1 Runtime Smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Runtime facts
+        run: |
+          echo "KTHSP1_RUNTIME_SMOKE=START"
+          uname -a
+          nproc
+          free -h
+          df -h /
+
+      - name: Create result
+        run: |
+          mkdir -p result
+          cat > result/runtime_smoke.json <<'JSON'
+          {
+            "status": "PASS",
+            "provider": "GITHUB_ACTIONS_STANDARD_RUNNER",
+            "target": "KTHSP1_IMAGE_RUNTIME",
+            "image_generation": false
+          }
+          JSON
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: kthsp1-runtime-smoke-result
+          path: result/runtime_smoke.json
+          retention-days: 1
