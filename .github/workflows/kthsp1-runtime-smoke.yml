@@ -1,39 +1,133 @@
-name: KTHSP1 Runtime Smoke
+name: KTHSP1 Concrete Jungle Image E2E
 
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/kthsp1-runtime-smoke.yml'
   workflow_dispatch:
 
 jobs:
-  smoke:
+  generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 45
 
     steps:
-      - name: Runtime facts
-        run: |
-          echo "KTHSP1_RUNTIME_SMOKE=START"
-          uname -a
-          nproc
-          free -h
-          df -h /
+      - name: Restore KTHSP1 cache
+        uses: actions/cache@v4
+        with:
+          path: .kthsp1-cache
+          key: kthsp1-sd15-runtime-base-v1
 
-      - name: Create result
+      - name: Prepare downloader
         run: |
+          python -m pip install --disable-pip-version-check -q gdown
+
+      - name: Rehydrate KTHSP1 runtime
+        run: |
+          set -euo pipefail
+
+          mkdir -p .kthsp1-cache/runtime
+          mkdir -p .kthsp1-cache/models
           mkdir -p result
-          cat > result/runtime_smoke.json <<'JSON'
-          {
-            "status": "PASS",
-            "provider": "GITHUB_ACTIONS_STANDARD_RUNNER",
-            "target": "KTHSP1_IMAGE_RUNTIME",
-            "image_generation": false
-          }
-          JSON
 
-      - name: Upload result
+          if [ ! -f .kthsp1-cache/runtime.zip ]; then
+            gdown --id 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv \
+              -O .kthsp1-cache/runtime.zip
+          fi
+
+          if [ ! -d .kthsp1-cache/runtime/bin ]; then
+            unzip -q -o .kthsp1-cache/runtime.zip \
+              -d .kthsp1-cache/runtime
+          fi
+
+          BASE=".kthsp1-cache/models/base.gguf"
+
+          if [ ! -f "$BASE" ]; then
+            gdown --id 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d \
+              -O "$BASE"
+          fi
+
+          echo \
+          "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  $BASE" \
+          | sha256sum -c -
+
+      - name: Generate Concrete Jungle image
+        run: |
+          set -euo pipefail
+
+          SD_CLI="$(find .kthsp1-cache/runtime -type f -name sd-cli -print -quit)"
+          test -n "$SD_CLI"
+          chmod +x "$SD_CLI"
+
+          SD_DIR="$(dirname "$SD_CLI")"
+          export LD_LIBRARY_PATH="$SD_DIR:${LD_LIBRARY_PATH:-}"
+
+          "$SD_CLI" -h > result/sd-cli-help.txt 2>&1
+
+          grep -q -- '--params-backend' result/sd-cli-help.txt
+          grep -q -- '--vae-conv-direct' result/sd-cli-help.txt
+
+          "$SD_CLI" \
+            -m .kthsp1-cache/models/base.gguf \
+            --backend cpu \
+            --params-backend disk \
+            --vae-conv-direct \
+            -p "cinematic 2D animated film background, abandoned concrete urban alley after rain, cracked concrete walls, moss and small plants, soft dawn mist, atmospheric light, detailed hand painted animation background, empty environment" \
+            -n "people, person, character, animal, text, sign, logo, watermark, poster, blurry, low quality" \
+            --cfg-scale 1.0 \
+            --steps 1 \
+            --seed 20260917 \
+            -W 256 \
+            -H 256 \
+            -o result/CONCRETE_JUNGLE_ENV_E2E_256.png \
+            --log-level info \
+            2>&1 | tee result/generation.log
+
+      - name: Verify PNG
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, struct, json
+
+          p = Path("result/CONCRETE_JUNGLE_ENV_E2E_256.png")
+          assert p.exists() and p.stat().st_size > 0
+
+          b = p.read_bytes()
+          assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+          w, h = struct.unpack(">II", b[16:24])
+          assert (w, h) == (256, 256)
+
+          sha = hashlib.sha256(b).hexdigest()
+
+          manifest = {
+              "status": "TECH_QA_PASS",
+              "project": "콘크리트애니만들기",
+              "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+              "image_gen_used": False,
+              "width": w,
+              "height": h,
+              "sha256": sha,
+              "output": p.name
+          }
+
+          Path("result/manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2),
+              encoding="utf-8"
+          )
+
+          print(json.dumps(manifest, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload generated image
         uses: actions/upload-artifact@v4
         with:
-          name: kthsp1-runtime-smoke-result
+          name: kthsp1-concrete-jungle-e2e
+          path: |
+            result/CONCRETE_JUNGLE_ENV_E2E_256.png
+            result/manifest.json
+            result/generation.log
+          retention-days: 7          name: kthsp1-runtime-smoke-result
           path: result/runtime_smoke.json
           retention-days: 1
