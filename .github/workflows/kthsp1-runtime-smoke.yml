@@ -128,6 +128,4 @@ jobs:
             result/CONCRETE_JUNGLE_ENV_E2E_256.png
             result/manifest.json
             result/generation.log
-          retention-days: 7          name: kthsp1-runtime-smoke-result
-          path: result/runtime_smoke.json
-          retention-days: 1
+          retention-days: 7          
