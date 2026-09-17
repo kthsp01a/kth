@@ -32,7 +32,7 @@ jobs:
           mkdir -p result
 
           if [ ! -f .kthsp1-cache/runtime.zip ]; then
-            gdown --id 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv \
+            gdown  1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv \
               -O .kthsp1-cache/runtime.zip
           fi
 
@@ -44,7 +44,7 @@ jobs:
           BASE=".kthsp1-cache/models/base.gguf"
 
           if [ ! -f "$BASE" ]; then
-            gdown --id 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d \
+            gdown  11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d \
               -O "$BASE"
           fi
 
