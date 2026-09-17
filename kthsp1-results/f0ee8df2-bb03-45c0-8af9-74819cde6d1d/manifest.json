@@ -1,0 +1,13 @@
+{
+  "status": "TECH_QA_PASS",
+  "route_mode": "inpaint",
+  "job_id": "f0ee8df2-bb03-45c0-8af9-74819cde6d1d",
+  "request_key": "concrete_jungle_inpaint_e2e_main_20260917_002",
+  "project": "콘크리트애니만들기",
+  "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+  "image_gen_used": false,
+  "width": 256,
+  "height": 256,
+  "sha256": "563805e5c4a3957e4663b97f90ded954862e21a49fe6fba55ae23debe8381652",
+  "output": "image.png"
+}
