@@ -32,160 +32,193 @@ jobs:
           QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
           set -euo pipefail
-          RESP="$(curl -fsS -H "x-kthsp1-token: ${QUEUE_TOKEN}" "${QUEUE_ROOT}?action=next")"
+
+          RESP="$(curl -fsS \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            "${QUEUE_ROOT}?action=next")"
+
           printf '%s' "$RESP" > queue-response.json
+
           python - <<'PY'
           import json, os
           from pathlib import Path
+
           data = json.loads(Path("queue-response.json").read_text())
           job = data.get("job")
+
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("has_job=" + ("true" if job else "false") + "
-")
+              f.write("has_job=" + ("true" if job else "false") + "\n")
+
           if job:
-              Path("job.json").write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+              Path("job.json").write_text(
+                  json.dumps(job, ensure_ascii=False, indent=2),
+                  encoding="utf-8"
+              )
               print("KTHSP1 job:", job["id"])
           else:
               print("No queued KTHSP1 jobs.")
           PY
 
-      - name: Validate and route job
+      - name: Restore model cache
         if: steps.queue.outputs.has_job == 'true'
-        id: route
-        run: |
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          job = json.loads(Path("job.json").read_text(encoding="utf-8"))
-          mode = "inpaint" if job.get("output_kind") == "EXISTING_ASSET_EDIT" else "txt2img"
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"mode={mode}
-")
-          Path("result").mkdir(exist_ok=True)
-          Path("result/route.json").write_text(json.dumps({"route_mode":mode,"output_kind":job.get("output_kind"),"fail_closed":True}, ensure_ascii=False, indent=2), encoding="utf-8")
-          if mode == "inpaint":
-              init_url = job.get("init_image_url")
-              mask_url = job.get("mask_image_url")
-              mask_strategy = job.get("mask_strategy")
-              if not isinstance(init_url, str) or not init_url.startswith(("http://", "https://")):
-                  Path("failure_reason.txt").write_text("inpaint_missing_https_init_image_url", encoding="utf-8")
-                  raise SystemExit("inpaint requires HTTPS init_image_url")
-              if not (isinstance(mask_url, str) and mask_url.startswith(("http://", "https://"))) and mask_strategy not in ("center_rect", "full"):
-                  Path("failure_reason.txt").write_text("inpaint_missing_mask", encoding="utf-8")
-                  raise SystemExit("inpaint requires mask_image_url or supported mask_strategy")
-          print("KTHSP1 route:", mode)
-          PY
-
-      - name: Restore core runtime and txt2img cache
-        if: steps.queue.outputs.has_job == 'true'
-        id: core-cache
+        id: cache-restore
         uses: actions/cache/restore@v4
         with:
-          path: |
-            .kthsp1-cache/runtime
-            .kthsp1-cache/runtime.zip
-            .kthsp1-cache/models/base.gguf
+          path: .kthsp1-cache
           key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
-
-      - name: Restore inpaint cache
-        if: steps.route.outputs.mode == 'inpaint'
-        id: inpaint-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .kthsp1-cache/models/inpaint.gguf
-          key: kthsp1-sd15-inpaint-d157ce24-v1
 
       - name: Prepare downloader
         if: steps.queue.outputs.has_job == 'true'
-        run: python -m pip install --disable-pip-version-check -q gdown
+        run: |
+          python -m pip install --disable-pip-version-check -q gdown
 
-      - name: Rehydrate selected model route
+      - name: Rehydrate runtime and model
         if: steps.queue.outputs.has_job == 'true'
         run: |
           set -euo pipefail
-          mkdir -p .kthsp1-cache/runtime .kthsp1-cache/models result
-          if [ ! -f .kthsp1-cache/runtime.zip ]; then gdown 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv -O .kthsp1-cache/runtime.zip; fi
-          if ! find .kthsp1-cache/runtime -type f -name sd-cli -print -quit | grep -q .; then unzip -q -o .kthsp1-cache/runtime.zip -d .kthsp1-cache/runtime; fi
-          TXT2IMG=".kthsp1-cache/models/base.gguf"
-          if [ ! -f "$TXT2IMG" ]; then curl -L --fail --retry 3 --retry-delay 2 "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/f41080936c76af537542aedf67f0dab94e1f337f/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf?download=true" -o "$TXT2IMG"; fi
-          echo "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f  $TXT2IMG" | sha256sum -c -
-          if [ "${{ steps.route.outputs.mode }}" = "inpaint" ]; then INPAINT=".kthsp1-cache/models/inpaint.gguf"; if [ ! -f "$INPAINT" ]; then gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d -O "$INPAINT"; fi; echo "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  $INPAINT" | sha256sum -c -; fi
 
-      - name: Save core cache
-        if: steps.queue.outputs.has_job == 'true' && steps.core-cache.outputs.cache-hit != 'true'
+          mkdir -p .kthsp1-cache/runtime
+          mkdir -p .kthsp1-cache/models
+          mkdir -p result
+
+          if [ ! -f .kthsp1-cache/runtime.zip ]; then
+            gdown 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv \
+              -O .kthsp1-cache/runtime.zip
+          fi
+
+          if ! find .kthsp1-cache/runtime -type f -name sd-cli \
+              -print -quit | grep -q .; then
+            unzip -q -o .kthsp1-cache/runtime.zip \
+              -d .kthsp1-cache/runtime
+          fi
+
+          BASE=".kthsp1-cache/models/base.gguf"
+
+          if [ ! -f "$BASE" ]; then
+            curl -L --fail --retry 3 --retry-delay 2 "https://huggingface.co/second-state/stable-diffusion-v1-5-GGUF/resolve/f41080936c76af537542aedf67f0dab94e1f337f/stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf?download=true" \
+              -o "$BASE"
+          fi
+
+          echo \
+          "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f  $BASE" \
+          | sha256sum -c -
+
+      - name: Save model cache
+        if: >
+          steps.queue.outputs.has_job == 'true' &&
+          steps.cache-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: |
-            .kthsp1-cache/runtime
-            .kthsp1-cache/runtime.zip
-            .kthsp1-cache/models/base.gguf
+          path: .kthsp1-cache
           key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
-
-      - name: Save inpaint cache
-        if: steps.route.outputs.mode == 'inpaint' && steps.inpaint-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .kthsp1-cache/models/inpaint.gguf
-          key: kthsp1-sd15-inpaint-d157ce24-v1
 
       - name: Generate KTHSP1 image
         if: steps.queue.outputs.has_job == 'true'
         run: |
           python - <<'PY'
-          import hashlib, json, os, struct, subprocess, urllib.request
+          import json
+          import os
+          import subprocess
           from pathlib import Path
+
           job = json.loads(Path("job.json").read_text(encoding="utf-8"))
-          mode = "inpaint" if job.get("output_kind") == "EXISTING_ASSET_EDIT" else "txt2img"
-          sd_cli = next(Path(".kthsp1-cache/runtime").rglob("sd-cli"))
+
+          sd_cli = next(
+              Path(".kthsp1-cache/runtime").rglob("sd-cli")
+          )
           sd_cli.chmod(0o755)
+
           env = os.environ.copy()
-          env["LD_LIBRARY_PATH"] = str(sd_cli.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
-          model = ".kthsp1-cache/models/inpaint.gguf" if mode == "inpaint" else ".kthsp1-cache/models/base.gguf"
-          args = [str(sd_cli),"-m",model,"--backend","cpu","--params-backend","disk","--vae-conv-direct","-p",job["prompt"],"-n",job.get("negative_prompt",""),"--cfg-scale","7.0","--steps",str(job["steps"]),"--seed",str(job["seed"]),"-W",str(job["width"]),"-H",str(job["height"]),"-o","result/image.png"]
-          def download(url, path):
-              req = urllib.request.Request(url, headers={"User-Agent":"KTHSP1-Worker/1.0"})
-              with urllib.request.urlopen(req, timeout=60) as r, open(path,"wb") as f: f.write(r.read())
-          def write_mask_bmp(path, w, h, strategy):
-              row_raw=w*3; row_size=(row_raw+3)&~3; pixels=bytearray()
-              for y in range(h):
-                  row=bytearray()
-                  for x in range(w):
-                      v=255 if strategy=="full" or (w//4<=x<(3*w)//4 and h//4<=y<(3*h)//4) else 0
-                      row.extend((v,v,v))
-                  row.extend(b"\x00"*(row_size-row_raw)); pixels.extend(row)
-              size=54+len(pixels)
-              header=b"BM"+struct.pack("<IHHI",size,0,0,54)
-              dib=struct.pack("<IIIHHIIIIII",40,w,h,1,24,0,len(pixels),2835,2835,0,0)
-              Path(path).write_bytes(header+dib+pixels)
-          input_sha=None; mask_sha=None
-          if mode=="inpaint":
-              init_path=Path("result/init_image.bin"); download(job["init_image_url"],init_path); input_sha=hashlib.sha256(init_path.read_bytes()).hexdigest()
-              mask_url=job.get("mask_image_url")
-              if isinstance(mask_url,str) and mask_url.startswith(("http://","https://")):
-                  mask_path=Path("result/mask_image.bin"); download(mask_url,mask_path)
-              else:
-                  mask_path=Path("result/mask.bmp"); write_mask_bmp(mask_path,int(job["width"]),int(job["height"]),job.get("mask_strategy") or "center_rect")
-              mask_sha=hashlib.sha256(mask_path.read_bytes()).hexdigest()
-              args += ["--init-img",str(init_path),"--mask",str(mask_path),"--strength",str(job.get("strength",0.75))]
-          route_meta={"route_mode":mode,"model_family":"SD1.5_INPAINT_Q4_0" if mode=="inpaint" else "SD1.5_TXT2IMG_Q4_0","model_sha256":"d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16" if mode=="inpaint" else "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f","input_sha256":input_sha,"mask_sha256":mask_sha,"input_files_published":False}
-          Path("result/route.json").write_text(json.dumps(route_meta,ensure_ascii=False,indent=2),encoding="utf-8")
-          proc=subprocess.run(args,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
-          Path("result/generation.log").write_text(proc.stdout,encoding="utf-8"); print(proc.stdout)
-          if proc.returncode!=0:
-              Path("failure_reason.txt").write_text(f"sd_cli_exit_{proc.returncode}",encoding="utf-8"); raise SystemExit(proc.returncode)
+          env["LD_LIBRARY_PATH"] = (
+              str(sd_cli.parent)
+              + ":"
+              + env.get("LD_LIBRARY_PATH", "")
+          )
+
+          args = [
+              str(sd_cli),
+              "-m", ".kthsp1-cache/models/base.gguf",
+              "--backend", "cpu",
+              "--params-backend", "disk",
+              "--vae-conv-direct",
+              "-p", job["prompt"],
+              "-n", job.get("negative_prompt", ""),
+              "--cfg-scale", "7.0",
+              "--steps", str(job["steps"]),
+              "--seed", str(job["seed"]),
+              "-W", str(job["width"]),
+              "-H", str(job["height"]),
+              "-o", "result/image.png",
+          ]
+
+          proc = subprocess.run(
+              args,
+              env=env,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True
+          )
+
+          Path("result/generation.log").write_text(
+              proc.stdout,
+              encoding="utf-8"
+          )
+
+          print(proc.stdout)
+
+          if proc.returncode != 0:
+              raise SystemExit(proc.returncode)
           PY
 
       - name: Verify PNG
         if: steps.queue.outputs.has_job == 'true'
         run: |
           python - <<'PY'
-          import json, hashlib, struct
+          import json
+          import hashlib
+          import struct
           from pathlib import Path
-          job=json.loads(Path("job.json").read_text(encoding="utf-8")); route=json.loads(Path("result/route.json").read_text(encoding="utf-8")); p=Path("result/image.png")
-          assert p.exists() and p.stat().st_size>0
-          b=p.read_bytes(); assert b[:8].hex()=="89504e470d0a1a0a"; w,h=struct.unpack(">II",b[16:24]); assert w==int(job["width"]) and h==int(job["height"])
-          manifest={"status":"TECH_QA_PASS","job_id":job["id"],"request_key":job["request_key"],"project":job["project"],"provider":"KTHSP1_GITHUB_ACTIONS_RUNTIME","image_gen_used":False,"output_kind":job.get("output_kind"),"route_mode":route["route_mode"],"model_family":route["model_family"],"model_sha256":route["model_sha256"],"width":w,"height":h,"sha256":hashlib.sha256(b).hexdigest(),"output":"image.png"}
-          Path("result/manifest.json").write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding="utf-8"); print(json.dumps(manifest,ensure_ascii=False,indent=2))
+
+          job = json.loads(Path("job.json").read_text(encoding="utf-8"))
+          p = Path("result/image.png")
+
+          assert p.exists()
+          assert p.stat().st_size > 0
+
+          b = p.read_bytes()
+          assert b[:8] == b"\x89PNG\r\n\x1a\n"
+
+          w, h = struct.unpack(">II", b[16:24])
+          assert w == int(job["width"])
+          assert h == int(job["height"])
+
+          manifest = {
+              "status": "TECH_QA_PASS",
+              "job_id": job["id"],
+              "request_key": job["request_key"],
+              "project": job["project"],
+              "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+              "image_gen_used": False,
+              "width": w,
+              "height": h,
+              "sha256": hashlib.sha256(b).hexdigest(),
+              "output": "image.png"
+          }
+
+          Path("result/manifest.json").write_text(
+              json.dumps(
+                  manifest,
+                  ensure_ascii=False,
+                  indent=2
+              ),
+              encoding="utf-8"
+          )
+
+          print(json.dumps(
+              manifest,
+              ensure_ascii=False,
+              indent=2
+          ))
           PY
 
       - name: Upload evidence artifact
@@ -197,7 +230,6 @@ jobs:
             result/image.png
             result/manifest.json
             result/generation.log
-            result/route.json
             job.json
           retention-days: 7
 
@@ -205,16 +237,28 @@ jobs:
         if: steps.queue.outputs.has_job == 'true'
         run: |
           set -euo pipefail
-          JOB_ID="$(python -c 'import json; print(json.load(open("job.json"))["id"])')"
+
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
           DEST="kthsp1-results/${JOB_ID}"
+
           mkdir -p "$DEST"
+
           cp result/image.png "$DEST/image.png"
           cp result/manifest.json "$DEST/manifest.json"
-          cp result/route.json "$DEST/route.json"
+
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add "$DEST"
-          if ! git diff --cached --quiet; then git commit -m "KTHSP1 result ${JOB_ID} [skip ci]"; git push origin HEAD:main; fi
+
+          if ! git diff --cached --quiet; then
+            git commit -m \
+              "KTHSP1 result ${JOB_ID} [skip ci]"
+            git push origin HEAD:main
+          fi
 
       - name: Complete queue job
         if: steps.queue.outputs.has_job == 'true'
@@ -223,25 +267,58 @@ jobs:
           QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import hashlib,json
-          from pathlib import Path
-          job=json.loads(Path("job.json").read_text()); p=Path("result/image.png")
-          data={"action":"complete","id":job["id"],"status":"completed","result_url":f"https://raw.githubusercontent.com/kthsp01a/kth/main/kthsp1-results/{job['id']}/image.png","result_sha256":hashlib.sha256(p.read_bytes()).hexdigest()}
-          Path("complete.json").write_text(json.dumps(data),encoding="utf-8")
-          PY
-          curl -fsS -X POST -H "content-type: application/json" -H "x-kthsp1-token: ${QUEUE_TOKEN}" --data @complete.json "${QUEUE_ROOT}"
+
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
+          SHA="$(sha256sum result/image.png | awk '{print $1}')"
+
+          RESULT_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/kthsp1-results/${JOB_ID}/image.png"
+
+          jq -n \
+            --arg id "$JOB_ID" \
+            --arg url "$RESULT_URL" \
+            --arg sha "$SHA" \
+            '{
+              action:"complete",
+              id:$id,
+              status:"completed",
+              result_url:$url,
+              result_sha256:$sha
+            }' \
+            > complete.json
+
+          curl -fsS \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            --data @complete.json \
+            "$QUEUE_ROOT"
 
       - name: Mark failed queue job
-        if: failure() && steps.queue.outputs.has_job == 'true'
+        if: >
+          failure() &&
+          steps.queue.outputs.has_job == 'true'
         env:
           QUEUE_ROOT: https://cskrvvqlhyusksjgtldh.supabase.co/functions/v1/kthsp1-image-queue
           QUEUE_TOKEN: ${{ secrets.KTHSP1_QUEUE_TOKEN }}
         run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          job=json.loads(Path("job.json").read_text()); err=Path("failure_reason.txt").read_text().strip() if Path("failure_reason.txt").exists() else "github_actions_worker_failed"
-          Path("failed.json").write_text(json.dumps({"action":"complete","id":job["id"],"status":"failed","error":err}),encoding="utf-8")
-          PY
-          curl -sS -X POST -H "content-type: application/json" -H "x-kthsp1-token: ${QUEUE_TOKEN}" --data @failed.json "${QUEUE_ROOT}" || true
+          JOB_ID="$(python -c \
+            'import json; print(json.load(open("job.json"))["id"])')"
+
+          jq -n \
+            --arg id "$JOB_ID" \
+            '{
+              action:"complete",
+              id:$id,
+              status:"failed",
+              error:"github_actions_worker_failed"
+            }' \
+            > failed.json
+
+          curl -sS \
+            -X POST \
+            -H "content-type: application/json" \
+            -H "x-kthsp1-token: ${QUEUE_TOKEN}" \
+            --data @failed.json \
+            "$QUEUE_ROOT" || true
