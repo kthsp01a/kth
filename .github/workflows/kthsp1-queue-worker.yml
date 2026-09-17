@@ -230,6 +230,30 @@ jobs:
           if proc.returncode != 0:
               raise SystemExit(proc.returncode)
           PY
+      # KTHSP1_SOURCE_PRESERVATION_COMPOSITOR_V1
+      - name: Source preservation compositor
+        if: steps.queue.outputs.has_job == 'true' && steps.route.outputs.mode == 'inpaint'
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from PIL import Image, ImageChops
+          job=json.loads(Path('job.json').read_text(encoding='utf-8'))
+          src=Image.open('inpaint_input.png').convert('RGBA')
+          gen=Image.open('out.png').convert('RGBA')
+          mask=Image.open('inpaint_mask.png').convert('L')
+          if src.size!=gen.size or mask.size!=gen.size:
+              raise SystemExit('SOURCE_PRESERVATION_SIZE_MISMATCH')
+          out=Image.composite(gen,src,mask)
+          out.save('out.png')
+          outside=Image.eval(mask,lambda p:255-p)
+          d=ImageChops.difference(src,out).convert('RGB')
+          bbox=Image.composite(d,Image.new('RGB',d.size,(0,0,0)),outside).getbbox()
+          if bbox is not None:
+              raise SystemExit('SOURCE_PRESERVATION_OUTSIDE_CHANGED')
+          print('SOURCE_PRESERVATION_COMPOSITOR_PASS')
+          PY
+
       - name: Verify PNG
         if: steps.queue.outputs.has_job == 'true'
         run: |
