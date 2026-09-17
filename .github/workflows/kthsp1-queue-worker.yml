@@ -59,6 +59,7 @@ jobs:
               print("No queued KTHSP1 jobs.")
           PY
 
+      # KTHSP1_MAIN_INPAINT_E2E_V1
       - name: Route job minimal
         if: steps.queue.outputs.has_job == 'true'
         id: route
@@ -69,13 +70,9 @@ jobs:
           job=json.loads(Path("job.json").read_text(encoding="utf-8"))
           mode="inpaint" if job.get("output_kind")=="EXISTING_ASSET_EDIT" else "txt2img"
           with open(os.environ["GITHUB_OUTPUT"],"a") as f:
-              f.write("mode="+mode+"\n")
+              f.write("mode="+mode+"\\n")
           print("KTHSP1 route:",mode)
-          if mode=="inpaint":
-              Path("failure_reason.txt").write_text("INPAINT_ROUTE_HOLD",encoding="utf-8")
-              raise SystemExit(2)
           PY
-
       - name: Restore model cache
         if: steps.queue.outputs.has_job == 'true'
         id: cache-restore
@@ -84,10 +81,17 @@ jobs:
           path: .kthsp1-cache
           key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
 
+      - name: Restore inpaint cache
+        if: steps.queue.outputs.has_job == 'true' && steps.route.outputs.mode == 'inpaint'
+        id: inpaint-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .kthsp1-inpaint-cache
+          key: kthsp1-inpaint-sandbox-d157ce24-v1
       - name: Prepare downloader
         if: steps.queue.outputs.has_job == 'true'
         run: |
-          python -m pip install --disable-pip-version-check -q gdown
+          python -m pip install --disable-pip-version-check -q gdown pillow
 
       - name: Rehydrate runtime and model
         if: steps.queue.outputs.has_job == 'true'
@@ -120,6 +124,16 @@ jobs:
           "b8944e9fe0b69b36ae1b5bb0185b3a7b8ef14347fe0fa9af6c64c4829022261f  $BASE" \
           | sha256sum -c -
 
+      - name: Rehydrate inpaint runtime and model
+        if: steps.queue.outputs.has_job == 'true' && steps.route.outputs.mode == 'inpaint'
+        run: |
+          set -euo pipefail
+          mkdir -p .kthsp1-inpaint-cache/runtime .kthsp1-inpaint-cache/models result
+          if [ ! -f .kthsp1-inpaint-cache/runtime.zip ]; then gdown 1snFA1p0B1yuJqsF_I2YJrFZTKqpCeKzv -O .kthsp1-inpaint-cache/runtime.zip; fi
+          if ! find .kthsp1-inpaint-cache/runtime -type f -name sd-cli -print -quit | grep -q .; then unzip -q -o .kthsp1-inpaint-cache/runtime.zip -d .kthsp1-inpaint-cache/runtime; fi
+          MODEL=.kthsp1-inpaint-cache/models/inpaint.gguf
+          if [ ! -f "$MODEL" ]; then gdown 11QoQwVnTa3R_8bao0pbKZSwZQJBnW03d -O "$MODEL"; fi
+          echo "d157ce24483f0c999062da140eacebe8f3ed015e652723e31f6d39119b800c16  $MODEL" | sha256sum -c -
       - name: Save model cache
         if: >
           steps.queue.outputs.has_job == 'true' &&
@@ -129,6 +143,12 @@ jobs:
           path: .kthsp1-cache
           key: kthsp1-sd15-runtime-txt2img-b8944e9f-v1
 
+      - name: Save inpaint cache
+        if: steps.queue.outputs.has_job == 'true' && steps.route.outputs.mode == 'inpaint' && steps.inpaint-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .kthsp1-inpaint-cache
+          key: kthsp1-inpaint-sandbox-d157ce24-v1
       - name: Generate KTHSP1 image
         if: steps.queue.outputs.has_job == 'true'
         run: |
@@ -136,57 +156,80 @@ jobs:
           import json
           import os
           import subprocess
+          import urllib.request
           from pathlib import Path
 
           job = json.loads(Path("job.json").read_text(encoding="utf-8"))
+          mode = "inpaint" if job.get("output_kind") == "EXISTING_ASSET_EDIT" else "txt2img"
+          width = int(job["width"])
+          height = int(job["height"])
 
-          sd_cli = next(
-              Path(".kthsp1-cache/runtime").rglob("sd-cli")
-          )
+          if mode == "inpaint":
+              root = Path(".kthsp1-inpaint-cache")
+              model = root / "models/inpaint.gguf"
+          else:
+              root = Path(".kthsp1-cache")
+              model = root / "models/base.gguf"
+
+          sd_cli = next((root / "runtime").rglob("sd-cli"))
           sd_cli.chmod(0o755)
-
           env = os.environ.copy()
-          env["LD_LIBRARY_PATH"] = (
-              str(sd_cli.parent)
-              + ":"
-              + env.get("LD_LIBRARY_PATH", "")
-          )
+          env["LD_LIBRARY_PATH"] = str(sd_cli.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
 
           args = [
               str(sd_cli),
-              "-m", ".kthsp1-cache/models/base.gguf",
+              "-m", str(model),
               "--backend", "cpu",
               "--params-backend", "disk",
               "--vae-conv-direct",
               "-p", job["prompt"],
-              "-n", job.get("negative_prompt", ""),
+              "-n", job.get("negative_prompt") or "",
               "--cfg-scale", "7.0",
               "--steps", str(job["steps"]),
               "--seed", str(job["seed"]),
-              "-W", str(job["width"]),
-              "-H", str(job["height"]),
+              "-W", str(width),
+              "-H", str(height),
               "-o", "result/image.png",
           ]
 
-          proc = subprocess.run(
-              args,
-              env=env,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              text=True
-          )
+          if mode == "inpaint":
+              from PIL import Image, ImageDraw
+              init_url = job.get("init_image_url")
+              if not init_url:
+                  raise SystemExit("INPAINT_MISSING_INIT_IMAGE_URL")
+              urllib.request.urlretrieve(init_url, "result/init.png")
+              img = Image.open("result/init.png").convert("RGB")
+              if img.size != (width, height):
+                  img = img.resize((width, height))
+              img.save("result/init.png")
 
-          Path("result/generation.log").write_text(
-              proc.stdout,
-              encoding="utf-8"
-          )
+              mask_url = job.get("mask_image_url")
+              strategy = job.get("mask_strategy")
+              if mask_url:
+                  urllib.request.urlretrieve(mask_url, "result/mask-source.png")
+                  mask = Image.open("result/mask-source.png").convert("L")
+              elif strategy == "center_rect":
+                  mask = Image.new("L", (width, height), 0)
+                  ImageDraw.Draw(mask).rectangle((width//4, height//4, width*3//4-1, height*3//4-1), fill=255)
+              elif strategy == "full":
+                  mask = Image.new("L", (width, height), 255)
+              else:
+                  raise SystemExit("INPAINT_MISSING_MASK")
+              if mask.size != (width, height):
+                  mask = mask.resize((width, height), Image.Resampling.NEAREST)
+              mask.save("result/mask.png")
+              args += [
+                  "--init-img", "result/init.png",
+                  "--mask", "result/mask.png",
+                  "--strength", str(job.get("strength") if job.get("strength") is not None else 0.75),
+              ]
 
+          proc = subprocess.run(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+          Path("result/generation.log").write_text(proc.stdout, encoding="utf-8")
           print(proc.stdout)
-
           if proc.returncode != 0:
               raise SystemExit(proc.returncode)
           PY
-
       - name: Verify PNG
         if: steps.queue.outputs.has_job == 'true'
         run: |
@@ -211,6 +254,7 @@ jobs:
 
           manifest = {
               "status": "TECH_QA_PASS",
+              "route_mode": "inpaint" if job.get("output_kind") == "EXISTING_ASSET_EDIT" else "txt2img",
               "job_id": job["id"],
               "request_key": job["request_key"],
               "project": job["project"],
@@ -247,6 +291,8 @@ jobs:
             result/image.png
             result/manifest.json
             result/generation.log
+            result/init.png
+            result/mask.png
             job.json
           retention-days: 7
 
