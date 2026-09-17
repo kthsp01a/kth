@@ -1,0 +1,13 @@
+{
+  "status": "TECH_QA_PASS",
+  "route_mode": "txt2img",
+  "job_id": "9b4b2a0a-af4b-4f31-92d2-63157c546f25",
+  "request_key": "kthsp1_stress_txt_20260918_03",
+  "project": "KTHSP1_STRESS_TEST",
+  "provider": "KTHSP1_GITHUB_ACTIONS_RUNTIME",
+  "image_gen_used": false,
+  "width": 256,
+  "height": 256,
+  "sha256": "a27ceb0d832ecb8f51d5b128da22290344d0849cb5e74eddfa01c4f9ad66425e",
+  "output": "image.png"
+}
